@@ -1,11 +1,52 @@
-import { LearningItem, GraphState, CognitiveLevel } from "../types.js";
-
 /**
  * selectItemNode - 选择或创建 LearningItem
- * 
+ *
  * 职责：
  * - 如果已有 activeItem，直接返回
  * - 否则创建新的 LearningItem
+ */
+import type { GraphState, LearningItem } from "../types.js";
+import { CognitiveLevel, AWAITING_TOPIC_GOAL } from "../types.js";
+
+// ============================================================================
+// 辅助函数
+// ============================================================================
+
+/**
+ * 生成唯一的学习项 ID
+ */
+function generateItemId(): string {
+  return `item_${Date.now()}`;
+}
+
+/**
+ * 创建新的 LearningItem
+ */
+function createNewLearningItem(id: string): LearningItem {
+  return {
+    id,
+    goal: AWAITING_TOPIC_GOAL,
+    currentLevel: CognitiveLevel.IntuitionOnly,
+    cognitiveState: {
+      summary: "尚未开始评估",
+      missingParts: "所有内容",
+    },
+    recentEvidence: [],
+    nextIntent: "elicit_intuition",
+    status: { phase: "awaiting_topic" },
+  };
+}
+
+// ============================================================================
+// 节点函数
+// ============================================================================
+
+/**
+ * selectItemNode - 选择或创建 LearningItem
+ *
+ * @param state - 当前图状态
+ * @param _config - 可选的运行配置（LangGraph 规范）
+ * @returns 更新后的部分状态
  */
 export async function selectItemNode(
   state: GraphState
@@ -18,19 +59,9 @@ export async function selectItemNode(
     return {};
   }
 
-  // 创建新的 LearningItem（初始 goal 为通用提示，待用户输入后动态设置）
-  const newItemId = `item_${Date.now()}`;
-  const newItem: LearningItem = {
-    id: newItemId,
-    goal: "等待用户提出学习主题",
-    currentLevel: CognitiveLevel.IntuitionOnly,
-    cognitiveState: {
-      summary: "尚未开始评估",
-      missingParts: "所有内容",
-    },
-    recentEvidence: [],
-    nextIntent: "elicit_intuition",
-  };
+  // 创建新的 LearningItem
+  const newItemId = generateItemId();
+  const newItem = createNewLearningItem(newItemId);
 
   console.log(`✅ [selectItemNode] 创建新项: ${newItemId}`);
 
@@ -39,4 +70,3 @@ export async function selectItemNode(
     learningItems: { [newItemId]: newItem },
   };
 }
-

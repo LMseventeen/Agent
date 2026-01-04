@@ -1,77 +1,34 @@
-import OpenAI from "openai";
-import { GraphState, CognitiveLevel, TeachingPhase } from "../types.js";
-import { determineTeachingPhase } from "../utils/phaseDetector.js";
-
 /**
  * guideNode - 生成引导语
- * 
+ *
  * 职责：
  * - 根据 currentLevel + nextIntent 生成引导消息
  * - 使用 LLM 生成动态、有针对性的引导语
  */
-export async function guideNode(
-  state: GraphState
-): Promise<Partial<GraphState>> {
-  console.log("🟢 [guideNode] 开始生成引导");
+import OpenAI from "openai";
 
-  const activeItem = state.learningItems[state.activeItemId!];
-  
-  // 构建 system prompt（基于认知层级和教学意图）
-  const systemPrompt = buildSystemPrompt(activeItem);
-  
-  const modelName = process.env.OPENAI_MODEL || "deepseek-ai/DeepSeek-V3.2";
-  // 清理 baseURL（移除多余的 /chat/completions 后缀）
-  let apiBase = process.env.OPENAI_API_BASE || "https://api.siliconflow.cn/v1";
-  apiBase = apiBase.replace(/\/chat\/completions\/?$/, "");
-  
-  console.log(`  🤖 使用模型: ${modelName}`);
-  console.log(`  🌐 API Base: ${apiBase}`);
-  
-  const client = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-    baseURL: apiBase,
-  });
+import type { GraphState, LearningItem, Message } from "../types.js";
+import { TeachingPhase, AWAITING_TOPIC_GOAL } from "../types.js";
+import { determineTeachingPhase } from "../utils/phase-detector.js";
 
-  // 构建 messages
-  const messages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
-    { role: "system", content: systemPrompt },
-    ...state.messages.slice(-4).map(m => ({
-      role: (m.role === "user" ? "user" : "assistant") as "user" | "assistant",
-      content: m.content,
-    })),
-  ];
+// ============================================================================
+// 常量
+// ============================================================================
 
-  // 如果是初始引导，提高温度增加随机性
-  const isInitialPrompt = activeItem.goal === "等待用户提出学习主题";
-  const temperature = isInitialPrompt ? 0.9 : 0.8;
+const DEFAULT_MODEL = "deepseek-ai/DeepSeek-V3.2";
+const DEFAULT_API_BASE = "https://api.siliconflow.cn/v1";
+const INITIAL_TEMPERATURE = 0.9;
+const NORMAL_TEMPERATURE = 0.8;
+const MAX_CONTEXT_MESSAGES = 4;
 
-  const response = await client.chat.completions.create({
-    model: modelName,
-    messages: messages,
-    temperature,
-  });
-
-  const guideMessage = response.choices[0]?.message?.content || "";
-  
-  console.log(`✅ [guideNode] 生成完成: ${guideMessage.substring(0, 50)}...`);
-
-  return {
-    messages: [
-      ...state.messages,
-      { role: "assistant", content: guideMessage },
-    ],
-  };
-}
+// ============================================================================
+// Prompt 构建器（使用映射表）
+// ============================================================================
 
 /**
- * 根据 LearningItem 构建 System Prompt
+ * 初始欢迎 Prompt
  */
-function buildSystemPrompt(item: any): string {
-  const { currentLevel, cognitiveState } = item;
-
-  // 如果还没有明确学习目标，引导用户表达
-  if (item.goal === "等待用户提出学习主题") {
-    return `你是一位教学专家。请生成一个友好的欢迎消息，包含 3 个预设学习选项。
+const INITIAL_PROMPT = `你是一位教学专家。请生成一个友好的欢迎消息，包含 3 个预设学习选项。
 
 **要求**：
 1. 生成 3 个不同类型的学习场景（每次要有变化，不要重复）
@@ -104,23 +61,15 @@ function buildSystemPrompt(item: any): string {
 - 🎨 创意写作指导
 
 直接输出内容，不要有任何前置说明或元指令。`;
-  }
 
-  // 确定当前教学阶段
-  const phase = determineTeachingPhase(item);
-  
-  let basePrompt = `你是一位教学专家。你的目标不是直接讲解知识，而是引导学生自己构建理解。
-
-当前学习目标：${item.goal}
-当前认知状态：${cognitiveState.summary}
-缺失部分：${cognitiveState.missingParts || "未知"}
-
-`;
-
-  // 根据教学阶段生成不同的引导策略
-  switch (phase) {
-    case TeachingPhase.InfoCollection:
-      basePrompt += `
+/**
+ * 教学阶段 -> Prompt 生成器 映射
+ */
+const PHASE_PROMPT_BUILDERS: Record<
+  TeachingPhase,
+  (item: LearningItem) => string
+> = {
+  [TeachingPhase.InfoCollection]: (_item) => `
 **当前阶段：信息收集**
 
 **你的任务**：
@@ -144,11 +93,9 @@ function buildSystemPrompt(item: any): string {
 
 你先回答这个，我们再继续。"
 
-保持具体、聚焦、有选项的风格。一次只问一个明确问题。`;
-      break;
+保持具体、聚焦、有选项的风格。一次只问一个明确问题。`,
 
-    case TeachingPhase.UnderstandingElicitation:
-      basePrompt += `
+  [TeachingPhase.UnderstandingElicitation]: (_item) => `
 **当前阶段：理解引导**
 
 **你的任务**：引导学生用自己的话表达初步理解。
@@ -158,11 +105,9 @@ function buildSystemPrompt(item: any): string {
 示例风格：
 "好的！在我帮你之前，你能先说说你对这个问题的理解吗？不用担心对错，说说你现在的想法就好。"
 
-保持简短、友好、鼓励性。`;
-      break;
+保持简短、友好、鼓励性。`,
 
-    case TeachingPhase.Clarification:
-      basePrompt += `
+  [TeachingPhase.Clarification]: (_item) => `
 **当前阶段：边界澄清**
 
 **你的任务**：学生已有模糊直觉，现在要强迫他们思考边界。
@@ -172,11 +117,9 @@ function buildSystemPrompt(item: any): string {
 示例风格：
 "你提到了X，那我们想一个问题：如果没有X，会发生什么？"
 
-引导他们思考**反例、边界、必要性**。`;
-      break;
+引导他们思考**反例、边界、必要性**。`,
 
-    case TeachingPhase.Structured:
-      basePrompt += `
+  [TeachingPhase.Structured]: (_item) => `
 **当前阶段：结构化讲解**
 
 **你的任务**：学生已理解核心，现在可以给结构化框架。
@@ -185,11 +128,9 @@ function buildSystemPrompt(item: any): string {
 2. 给出清晰的知识结构（分点、层次）
 3. 引入具体机制和细节
 
-保持简洁，一次只讲一个核心点。语气专业但友好。`;
-      break;
+保持简洁，一次只讲一个核心点。语气专业但友好。`,
 
-    case TeachingPhase.Transfer:
-      basePrompt += `
+  [TeachingPhase.Transfer]: (_item) => `
 **当前阶段：迁移测试**
 
 **你的任务**：测试学生能否将知识迁移到新场景。
@@ -198,10 +139,134 @@ function buildSystemPrompt(item: any): string {
 示例：
 "现在假设有一个类似的情况...你会怎么处理？"
 
-鼓励他们类比、举一反三。`;
-      break;
-  }
+鼓励他们类比、举一反三。`,
+};
 
-  return basePrompt;
+// ============================================================================
+// 辅助函数
+// ============================================================================
+
+/**
+ * 清理 API Base URL
+ */
+function cleanApiBaseUrl(baseUrl: string): string {
+  return baseUrl.replace(/\/chat\/completions\/?$/, "");
 }
 
+/**
+ * 根据 LearningItem 构建 System Prompt
+ */
+function buildSystemPrompt(item: LearningItem): string {
+  // 如果还没有明确学习目标，返回初始 Prompt
+  if (item.goal === AWAITING_TOPIC_GOAL) {
+    return INITIAL_PROMPT;
+  }
+
+  // 确定当前教学阶段
+  const phase = determineTeachingPhase(item);
+  const phasePrompt = PHASE_PROMPT_BUILDERS[phase](item);
+
+  return `你是一位教学专家。你的目标不是直接讲解知识，而是引导学生自己构建理解。
+
+当前学习目标：${item.goal}
+当前认知状态：${item.cognitiveState.summary}
+缺失部分：${item.cognitiveState.missingParts ?? "未知"}
+${phasePrompt}`;
+}
+
+/**
+ * 将内部消息转换为 OpenAI 消息格式
+ */
+function convertToOpenAIMessages(
+  messages: readonly Message[]
+): Array<{ role: "user" | "assistant"; content: string }> {
+  return messages.slice(-MAX_CONTEXT_MESSAGES).map((m) => ({
+    role: m.role === "user" ? ("user" as const) : ("assistant" as const),
+    content: m.content,
+  }));
+}
+
+// ============================================================================
+// 节点函数
+// ============================================================================
+
+/**
+ * guideNode - 生成引导语
+ *
+ * @param state - 当前图状态
+ * @param _config - 可选的运行配置（LangGraph 规范）
+ * @returns 更新后的部分状态
+ */
+export async function guideNode(
+  state: GraphState
+): Promise<Partial<GraphState>> {
+  console.log("🟢 [guideNode] 开始生成引导");
+
+  const activeItemId = state.activeItemId;
+  if (!activeItemId) {
+    console.error("  ❌ 没有活动的学习项");
+    return {};
+  }
+
+  const activeItem = state.learningItems[activeItemId];
+  if (!activeItem) {
+    console.error(`  ❌ 找不到学习项: ${activeItemId}`);
+    return {};
+  }
+
+  // 构建 System Prompt
+  const systemPrompt = buildSystemPrompt(activeItem);
+
+  const modelName = process.env.OPENAI_MODEL ?? DEFAULT_MODEL;
+  const apiBase = cleanApiBaseUrl(
+    process.env.OPENAI_API_BASE ?? DEFAULT_API_BASE
+  );
+
+  console.log(`  🤖 使用模型: ${modelName}`);
+
+  const client = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+    baseURL: apiBase,
+  });
+
+  // 构建 messages
+  const contextMessages = convertToOpenAIMessages(state.messages);
+  const messages: Array<{
+    role: "system" | "user" | "assistant";
+    content: string;
+  }> = [{ role: "system", content: systemPrompt }, ...contextMessages];
+
+  // 如果是初始引导，提高温度增加随机性
+  const isInitialPrompt = activeItem.goal === AWAITING_TOPIC_GOAL;
+  const temperature = isInitialPrompt ? INITIAL_TEMPERATURE : NORMAL_TEMPERATURE;
+
+  try {
+    const response = await client.chat.completions.create({
+      model: modelName,
+      messages,
+      temperature,
+    });
+
+    const guideMessage = response.choices[0]?.message?.content ?? "";
+    console.log(`✅ [guideNode] 生成完成: ${guideMessage.substring(0, 50)}...`);
+
+    const newMessage: Message = { role: "assistant", content: guideMessage };
+
+    return {
+      messages: [...state.messages, newMessage],
+    };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`❌ [guideNode] LLM 调用失败: ${message}`);
+
+    // 降级处理：返回默认消息
+    const fallbackMessage: Message = {
+      role: "assistant",
+      content: "抱歉，我遇到了一些问题。请稍后再试。",
+    };
+
+    return {
+      messages: [...state.messages, fallbackMessage],
+    };
+  }
+}

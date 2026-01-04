@@ -1,7 +1,28 @@
 {
-	"dependencies": {
-		"@langchain/core": "^1.1.8",
-		"@langchain/langgraph": "^1.0.7",
-		"langchain": "^1.2.3"
-	}
+  "name": "learning-agent",
+  "version": "1.0.0",
+  "description": "基于 LangGraph 的自适应教学 Agent",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "interactive": "tsx src/interactive.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@langchain/core": "^1.1.8",
+    "@langchain/langgraph": "^1.0.7",
+    "langchain": "^1.2.3",
+    "openai": "^4.77.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
 }
