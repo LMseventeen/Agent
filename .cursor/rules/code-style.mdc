@@ -1,0 +1,355 @@
+---
+alwaysApply: true
+---
+# Learning Agent 项目 Cursor Rules
+
+你是一个专注于 LangGraph 教学 Agent 开发的 AI 助手。请严格遵循以下规范。
+
+## 项目概述
+
+这是一个基于 LangGraph 的自适应教学 Agent，通过认知层级评估引导学习。
+
+技术栈：
+- TypeScript 5.x + ES Module
+- LangGraph / LangChain
+- Node.js
+
+---
+
+## 核心原则
+
+### 类型优先
+
+1. **类型表达业务**：类型必须反映业务含义，不是技术兜底
+2. **非法状态不可表示**：使用判别联合确保状态合法性
+3. **编译时发现错误**：新需求应优先引发 TypeScript 编译错误
+
+### 代码质量
+
+1. **可读性优先**：代码是写给人看的，顺便给机器执行
+2. **单一职责**：一个函数/模块只做一件事
+3. **显式优于隐式**：明确标注返回类型，避免魔法
+
+---
+
+## TypeScript 规范
+
+### 禁止 any
+
+```typescript
+// ❌ 禁止
+function handle(input: any) {}
+
+// ✅ 使用 unknown + 类型守卫
+function handle(input: unknown): ParsedInput {
+  if (!isValidInput(input)) {
+    throw new ValidationError("Invalid input");
+  }
+  return input;
+}
+```
+
+### 使用判别联合表示状态
+
+```typescript
+// ❌ 不好：可能产生非法状态
+interface State {
+  loading: boolean;
+  data?: Data;
+  error?: string;
+}
+
+// ✅ 好：非法状态不可表示
+type State =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "success"; data: Data }
+  | { status: "error"; error: AppError };
+```
+
+### 函数设计
+
+```typescript
+// ❌ 参数过多
+function evaluate(a: string, b: number, c: boolean, d: string) {}
+
+// ✅ 使用参数对象（超过3个参数时）
+interface EvaluateParams {
+  answer: string;
+  score: number;
+  isFinal: boolean;
+  strategy: Strategy;
+}
+function evaluate(params: EvaluateParams): EvaluationResult {}
+
+// ✅ 函数名自解释
+function evaluateUnderstanding(state: CognitiveState): EvaluationResult {}
+
+// ✅ 显式标注返回类型
+async function fetchUser(id: string): Promise<User | null> {}
+```
+
+### 控制流
+
+```typescript
+// ❌ 嵌套地狱
+if (a) {
+  if (b) {
+    if (c) {
+      doSomething();
+    }
+  }
+}
+
+// ✅ 提前返回
+if (!a) return;
+if (!b) return;
+if (!c) return;
+doSomething();
+
+// ✅ 映射表代替 if-else 链
+const handlers: Record<Phase, Handler> = {
+  planning: handlePlanning,
+  acting: handleActing,
+  reflecting: handleReflecting,
+};
+function handle(phase: Phase) {
+  return handlers[phase]();
+}
+
+// ✅ switch 穷尽检查
+function handleStatus(status: Status): string {
+  switch (status) {
+    case "idle": return "等待中";
+    case "loading": return "加载中";
+    case "success": return "成功";
+    case "error": return "失败";
+    default:
+      const _exhaustive: never = status;
+      return _exhaustive;
+  }
+}
+```
+
+### 错误处理
+
+```typescript
+// ❌ 吞掉错误
+try { run(); } catch (e) { console.log(e); }
+
+// ✅ 记录并处理
+try {
+  run();
+} catch (error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  logger.error("Operation failed", { error: message });
+  throw error;
+}
+
+// ✅ 核心流程使用 Result 模式
+type Result<T, E = Error> =
+  | { ok: true; value: T }
+  | { ok: false; error: E };
+
+async function fetchUser(id: string): Promise<Result<User, ApiError>> {
+  try {
+    const user = await api.getUser(id);
+    return { ok: true, value: user };
+  } catch (error) {
+    return { ok: false, error: ApiError.from(error) };
+  }
+}
+```
+
+### 导入规范
+
+```typescript
+// ✅ 类型导入使用 import type
+import type { BaseMessage } from "@langchain/core/messages";
+import type { RunnableConfig } from "@langchain/core/runnables";
+
+// ✅ 按来源分组，空行分隔
+// 1. Node 内置
+import path from "node:path";
+
+// 2. 外部依赖
+import { ChatOpenAI } from "@langchain/openai";
+import { StateGraph } from "@langchain/langgraph";
+
+// 3. 内部模块
+import { assessNode } from "./nodes/assess";
+import { guideNode } from "./nodes/guide";
+
+// 4. 类型导入
+import type { GraphState, LearningItem } from "./types";
+```
+
+---
+
+## 项目特定规范
+
+### 认知层级枚举
+
+项目使用 `CognitiveLevel` 枚举表示学习者认知层级：
+
+```typescript
+enum CognitiveLevel {
+  IntuitionOnly = 1,   // 有直觉但说不清
+  CanDescribe = 2,     // 能描述但结构混乱
+  Structured = 3,      // 能用清晰结构表达
+  Transferable = 4     // 能迁移、应用、类比
+}
+```
+
+### 教学意图类型
+
+```typescript
+type TeachingIntent =
+  | "elicit_intuition"     // 引导表达直觉
+  | "force_clarification"  // 强迫说清楚
+  | "introduce_structure"  // 给出结构
+  | "test_transfer";       // 测试迁移
+```
+
+### LangGraph 节点规范
+
+```typescript
+// ✅ 节点函数签名
+async function assessNode(
+  state: GraphState,
+  config?: RunnableConfig
+): Promise<Partial<GraphState>> {
+  // 1. 从 state 提取需要的数据
+  const { activeItemId, learningItems, lastUserInput } = state;
+  
+  // 2. 处理逻辑
+  // ...
+  
+  // 3. 返回部分状态更新
+  return {
+    learningItems: { ...learningItems, [activeItemId]: updatedItem },
+  };
+}
+```
+
+### LLM 调用规范
+
+```typescript
+// ✅ 使用 withStructuredOutput 获取结构化输出
+const llm = new ChatOpenAI({
+  model: "gpt-4o-mini",
+  temperature: 0.3,
+});
+
+const structuredLlm = llm.withStructuredOutput(AssessmentResultSchema);
+const result = await structuredLlm.invoke(messages);
+
+// ✅ 使用 Zod 定义输出 schema
+import { z } from "zod";
+
+const AssessmentResultSchema = z.object({
+  level: z.nativeEnum(CognitiveLevel),
+  summary: z.string(),
+  missingParts: z.string().optional(),
+  nextIntent: z.enum([
+    "elicit_intuition",
+    "force_clarification",
+    "introduce_structure",
+    "test_transfer",
+  ]),
+});
+```
+
+---
+
+## 命名约定
+
+### 文件命名
+
+- 普通模块：`kebab-case.ts`（如 `goal-extractor.ts`）
+- 类型定义：`types.ts` 或 `*.types.ts`
+- 节点函数：`nodes/` 目录下，如 `assess.ts`、`guide.ts`
+
+### 变量命名
+
+```typescript
+// camelCase：变量、函数
+const learningItem = getLearningItem();
+const isCompleted = checkCompletion();
+
+// UPPER_SNAKE_CASE：常量
+const MAX_RETRY_COUNT = 3;
+const DEFAULT_MODEL = "gpt-4o-mini";
+
+// PascalCase：类型、接口、枚举
+interface LearningItem {}
+type TeachingIntent = "elicit" | "clarify";
+enum CognitiveLevel {}
+```
+
+### 布尔变量
+
+```typescript
+// ✅ 使用 is/has/can/should 前缀
+const isLoading = true;
+const hasBasicInfo = false;
+const canProceed = level >= CognitiveLevel.Structured;
+const shouldTransfer = intent === "test_transfer";
+```
+
+---
+
+## 注释规范
+
+### 函数注释
+
+```typescript
+/**
+ * 评估学习者当前认知层级
+ * 
+ * @param state - 当前图状态
+ * @param config - 可选的运行配置
+ * @returns 更新后的部分状态，包含评估结果
+ */
+async function assessNode(
+  state: GraphState,
+  config?: RunnableConfig
+): Promise<Partial<GraphState>> {}
+```
+
+### 行内注释
+
+```typescript
+// ✅ 解释"为什么"而不是"是什么"
+// 延迟评估直到收集到足够的用户输入
+if (evidence.length < MIN_EVIDENCE_COUNT) return;
+
+// TODO(author): 添加缓存支持 - 2024-01-15
+```
+
+---
+
+## 禁止事项
+
+1. ❌ 使用 `any` 类型
+2. ❌ 使用 `var` 声明变量
+3. ❌ 嵌套超过 2 层
+4. ❌ 函数超过 30 行不拆分
+5. ❌ 静默吞掉错误 `catch (e) { }`
+6. ❌ 硬编码配置值（应使用环境变量）
+7. ❌ 使用 `// @ts-ignore`（除非有充分理由并注释）
+8. ❌ 在业务逻辑中使用 `console.log`（应使用 logger）
+
+---
+
+## 推荐模式
+
+1. ✅ 使用 `unknown` 处理未知类型
+2. ✅ 使用判别联合表示状态机
+3. ✅ 使用 Result 模式处理可预期错误
+4. ✅ 使用 `import type` 分离类型导入
+5. ✅ 使用 `as const` 创建字面量类型
+6. ✅ 使用 `satisfies` 保留类型推断
+7. ✅ 使用 Zod 验证外部输入
+8. ✅ 优先使用 async/await 而非 Promise 链
+
