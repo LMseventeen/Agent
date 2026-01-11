@@ -52,6 +52,18 @@ export async function connectQuizServer(): Promise<McpConnection> {
 }
 
 /**
+ * MCP 工具返回内容类型
+ */
+interface McpTextContent {
+  type: "text";
+  text: string;
+}
+
+interface McpContent {
+  type: string;
+}
+
+/**
  * 直接调用 MCP 工具（不通过 LangChain）
  */
 export async function callTool(
@@ -64,9 +76,11 @@ export async function callTool(
     arguments: args,
   });
 
+  const content = result.content as McpContent[];
+
   // 解析返回的文本内容
-  const textContent = result.content.find((c) => c.type === "text");
-  if (textContent && "text" in textContent) {
+  const textContent = content.find((c): c is McpTextContent => c.type === "text");
+  if (textContent) {
     try {
       return JSON.parse(textContent.text);
     } catch {
@@ -74,5 +88,5 @@ export async function callTool(
     }
   }
 
-  return result.content;
+  return content;
 }
