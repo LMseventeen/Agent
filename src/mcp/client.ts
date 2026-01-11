@@ -30,6 +30,13 @@ export async function connectQuizServer(): Promise<McpConnection> {
   const transport = new StdioClientTransport({
     command: "npx",
     args: ["tsx", "src/mcp/quiz-server.ts"],
+    env: {
+      ...process.env,
+      // 确保 API 密钥传递给子进程
+      OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "",
+      OPENAI_API_BASE: process.env.OPENAI_API_BASE ?? "",
+      OPENAI_MODEL: process.env.OPENAI_MODEL ?? "",
+    },
   });
 
   const client = new Client({
