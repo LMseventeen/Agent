@@ -5,7 +5,10 @@
  * - 评估用户回答的认知层级
  * - 更新 LearningItem 的认知状态
  * - 决定下一步教学意图
+ * - 使用 Mem0 检索该用户历史记忆以辅助评估（当 config.configurable.userId 存在时）
  */
+import type { RunnableConfig } from "@langchain/core/runnables";
+
 import type {
   GraphState,
   LearningItem,
@@ -21,6 +24,7 @@ import {
 import { llmBasedAssessment } from "../assessment/llm.js";
 import { extractLearningGoal } from "../utils/goal-extractor.js";
 import { hasCollectedBasicInfo } from "../utils/phase-detector.js";
+import { searchMemories } from "../memory/index.js";
 
 // ============================================================================
 // 映射表（代替 if-else 链）
@@ -139,14 +143,19 @@ async function handleFirstInput(
 
 /**
  * 处理后续输入：评估认知状态
+ *
+ * @param memoryContext - 可选，Mem0 检索到的该用户历史记忆
  */
 async function handleSubsequentInput(
   activeItem: LearningItem,
-  userAnswer: string
+  userAnswer: string,
+  memoryContext?: string
 ): Promise<Partial<GraphState>> {
   console.log("  🤖 调用 LLM 评估...");
 
-  const assessmentResult = await llmBasedAssessment(userAnswer, activeItem);
+  const assessmentResult = await llmBasedAssessment(userAnswer, activeItem, {
+    memoryContext,
+  });
 
   // 处理评估失败的情况
   if (!assessmentResult.ok) {
@@ -200,14 +209,23 @@ async function handleSubsequentInput(
 // ============================================================================
 
 /**
+ * 从 config 中安全取出 userId（用于 Mem0）
+ */
+function getUserIdFromConfig(config?: RunnableConfig): string | undefined {
+  const id = config?.configurable?.userId;
+  return typeof id === "string" && id.trim() ? id : undefined;
+}
+
+/**
  * assessNode - 评估学生输入的认知状态
  *
  * @param state - 当前图状态
- * @param _config - 可选的运行配置（LangGraph 规范）
+ * @param config - 可选的运行配置；config.configurable.userId 存在时启用 Mem0 检索
  * @returns 更新后的部分状态
  */
 export async function assessNode(
-  state: GraphState
+  state: GraphState,
+  config?: RunnableConfig
 ): Promise<Partial<GraphState>> {
   console.log("🟡 [assessNode] 开始评估");
 
@@ -224,6 +242,7 @@ export async function assessNode(
   }
 
   const userAnswer = state.lastUserInput;
+  const userId = getUserIdFromConfig(config);
 
   // 判断是否是首次输入（目标未设定且无证据）
   const isFirstInput =
@@ -234,5 +253,16 @@ export async function assessNode(
     return handleFirstInput(activeItem, userAnswer);
   }
 
-  return handleSubsequentInput(activeItem, userAnswer);
+  // Mem0：按用户检索相关历史记忆，供评估参考
+  let memoryContext: string | undefined;
+  if (userId) {
+    const query = userAnswer.trim() || activeItem.goal;
+    const memories = await searchMemories(query, userId);
+    if (memories.length > 0) {
+      memoryContext = memories.map((m, i) => `${i + 1}. ${m}`).join("\n");
+      console.log(`  📎 [Mem0] 检索到 ${memories.length} 条相关记忆`);
+    }
+  }
+
+  return handleSubsequentInput(activeItem, userAnswer, memoryContext);
 }

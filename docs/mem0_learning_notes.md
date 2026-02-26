@@ -156,7 +156,65 @@ Mem0 可以与之**并存**、分工明确：
 
 ---
 
-## 7. 参考链接
+## 7. 本项目已集成说明
+
+项目支持两种模式（**二选一**即可启用记忆层）：
+
+- **托管**：配置 `MEM0_API_KEY`（Mem0 官方 key），记忆存云端，无需本地向量库。
+- **本地 OSS**：不配 `MEM0_API_KEY` 时，使用 mem0ai/oss 本地 Memory（需 `OPENAI_API_KEY` 或 Ollama）。
+
+### 启用方式
+
+**方式 A：Mem0 托管（推荐，用官方 key）**
+
+1. 在 [Mem0 Platform](https://app.mem0.ai) 获取 API Key，在 `.env` 中配置：
+   ```bash
+   MEM0_API_KEY=m0-xxxxxxxx
+   ```
+   配置后即启用记忆层，无需再配 OPENAI 相关变量给 Mem0。
+
+**方式 B：本地 OSS**
+
+1. 不配置 `MEM0_API_KEY`，与教学 Agent 共用 LLM 配置，在 `.env` 中：
+   ```bash
+   OPENAI_API_KEY=你的密钥
+   OPENAI_API_BASE=https://api.xxx.com/v1   # 可选
+   OPENAI_MODEL=gpt-4o-mini
+   ```
+2. 可选：记忆专用 embedding 模型（默认 `text-embedding-3-small`）：
+   ```bash
+   MEM0_EMBEDDING_MODEL=text-embedding-3-small
+   ```
+3. 可选：向量库与历史库路径（默认在项目下 `data/`）：
+   ```bash
+   MEM0_VECTOR_DB_PATH=data/vector_store.db
+   MEM0_HISTORY_DB_PATH=data/memory_history.db
+   ```
+4. **若出现 401（API key 错误）**：mem0ai 自带的 OpenAI embedder 不会使用 `OPENAI_API_BASE`，请求会发往 `api.openai.com`，用第三方 key（如 SiliconFlow）会报 401。可用**本地 Ollama** 做 embedding，仅摘要用你的 API：
+   ```bash
+   MEM0_EMBEDDER=ollama
+   MEM0_OLLAMA_URL=http://localhost:11434
+   MEM0_OLLAMA_EMBED_MODEL=nomic-embed-text
+   ```
+   需本机已安装并运行 Ollama，且拉取过 `nomic-embed-text`（`ollama pull nomic-embed-text`）。不配置则使用默认 `data/` 下路径。未配置 `OPENAI_API_KEY` 时：记忆层不启用。
+
+### 行为说明
+
+| 位置 | 行为 |
+|------|------|
+| **assess 节点** | 若 `config.configurable.userId` 存在，用当前用户输入/学习目标做 `memory.search`，将检索到的历史记忆拼入评估 LLM 的 prompt。 |
+| **guide 节点** | 若存在 `userId` 且本轮有用户输入，在生成引导语后，将本轮 `[user, assistant]` 调用 `memory.add` 写入 Mem0。 |
+| **交互式 CLI** | `pnpm run interactive` 登录后会把当前用户的 `id` 作为 `userId` 传入图，因此会按用户做记忆检索与写入。 |
+
+### 代码入口
+
+- 记忆封装：`src/memory/mem0.ts`（`searchMemories`、`addMemories`、`isMem0Enabled`）
+- 评估侧：`src/assessment/llm.ts` 的 `llmBasedAssessment(..., options?.memoryContext)`
+- 节点：`src/nodes/assess.ts`、`src/nodes/guide.ts` 中读取 `config?.configurable?.userId` 并调用 memory 模块
+
+---
+
+## 8. 参考链接
 
 - [Mem0 官网](https://mem0.ai)
 - [GitHub - mem0ai/mem0](https://github.com/mem0ai/mem0)

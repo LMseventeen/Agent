@@ -4,12 +4,15 @@
  * 职责：
  * - 根据 currentLevel + nextIntent 生成引导消息
  * - 使用 LLM 生成动态、有针对性的引导语
+ * - 当 config.configurable.userId 存在时，将本轮对话写入 Mem0 长期记忆
  */
+import type { RunnableConfig } from "@langchain/core/runnables";
 import OpenAI from "openai";
 
 import type { GraphState, LearningItem, Message } from "../types.js";
 import { TeachingPhase, AWAITING_TOPIC_GOAL } from "../types.js";
 import { determineTeachingPhase } from "../utils/phase-detector.js";
+import { addMemories } from "../memory/index.js";
 
 // ============================================================================
 // 常量
@@ -191,14 +194,23 @@ function convertToOpenAIMessages(
 // ============================================================================
 
 /**
+ * 从 config 中安全取出 userId（用于 Mem0）
+ */
+function getUserIdFromConfig(config?: RunnableConfig): string | undefined {
+  const id = config?.configurable?.userId;
+  return typeof id === "string" && id.trim() ? id : undefined;
+}
+
+/**
  * guideNode - 生成引导语
  *
  * @param state - 当前图状态
- * @param _config - 可选的运行配置（LangGraph 规范）
+ * @param config - 可选的运行配置；config.configurable.userId 存在时会将本轮对话写入 Mem0
  * @returns 更新后的部分状态
  */
 export async function guideNode(
-  state: GraphState
+  state: GraphState,
+  config?: RunnableConfig
 ): Promise<Partial<GraphState>> {
   console.log("🟢 [guideNode] 开始生成引导");
 
@@ -251,6 +263,18 @@ export async function guideNode(
     console.log(`✅ [guideNode] 生成完成: ${guideMessage.substring(0, 50)}...`);
 
     const newMessage: Message = { role: "assistant", content: guideMessage };
+
+    // Mem0：若有 userId 且本轮有用户输入，将本轮对话写入长期记忆
+    const userId = getUserIdFromConfig(config);
+    if (userId && state.lastUserInput.trim()) {
+      await addMemories(
+        [
+          { role: "user", content: state.lastUserInput },
+          { role: "assistant", content: guideMessage },
+        ],
+        userId
+      );
+    }
 
     return {
       messages: [...state.messages, newMessage],

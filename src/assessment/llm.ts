@@ -48,11 +48,26 @@ function cleanApiBaseUrl(baseUrl: string): string {
 
 /**
  * 构建评估提示词
+ *
+ * @param memoryContext - 可选，该学生相关历史记忆（来自 Mem0），拼入 prompt 供参考
  */
-function buildAssessmentPrompt(answer: string, item: LearningItem): string {
-  return `你是一位教学评估专家。请评估学生对以下学习目标的理解程度。
+function buildAssessmentPrompt(
+  answer: string,
+  item: LearningItem,
+  memoryContext?: string
+): string {
+  const memoryBlock =
+    memoryContext && memoryContext.trim()
+      ? `
 
-学习目标：${item.goal}
+该学生相关历史记忆（供参考）：
+${memoryContext}
+
+`
+      : "";
+
+  return `你是一位教学评估专家。请评估学生对以下学习目标的理解程度。
+${memoryBlock}学习目标：${item.goal}
 
 学生回答：
 "${answer}"
@@ -101,11 +116,13 @@ function parseLlmResponse(content: string): Result<AssessmentResult, string> {
  *
  * @param answer - 学生的回答
  * @param item - 当前学习项
+ * @param options - 可选，memoryContext 为 Mem0 检索到的该学生历史记忆
  * @returns 评估结果或错误
  */
 export async function llmBasedAssessment(
   answer: string,
-  item: LearningItem
+  item: LearningItem,
+  options?: { memoryContext?: string }
 ): Promise<Result<AssessmentResult, string>> {
   const modelName = process.env.OPENAI_MODEL ?? DEFAULT_MODEL;
   const apiBase = cleanApiBaseUrl(
@@ -119,7 +136,11 @@ export async function llmBasedAssessment(
     baseURL: apiBase,
   });
 
-  const prompt = buildAssessmentPrompt(answer, item);
+  const prompt = buildAssessmentPrompt(
+    answer,
+    item,
+    options?.memoryContext
+  );
 
   try {
     const response = await client.chat.completions.create({
