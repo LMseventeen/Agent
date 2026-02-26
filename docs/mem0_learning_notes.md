@@ -190,7 +190,8 @@ Mem0 可以与之**并存**、分工明确：
    MEM0_VECTOR_DB_PATH=data/vector_store.db
    MEM0_HISTORY_DB_PATH=data/memory_history.db
    ```
-4. **若出现 401（API key 错误）**：mem0ai 自带的 OpenAI embedder 不会使用 `OPENAI_API_BASE`，请求会发往 `api.openai.com`，用第三方 key（如 SiliconFlow）会报 401。可用**本地 Ollama** 做 embedding，仅摘要用你的 API：
+4. 可选：`MEM0_CUSTOM_INSTRUCTIONS`（如 `用中文总结并存储`）可引导 Mem0 抽取记忆时的表述方式。
+5. **若出现 401（API key 错误）**：mem0ai 自带的 OpenAI embedder 不会使用 `OPENAI_API_BASE`，请求会发往 `api.openai.com`，用第三方 key（如 SiliconFlow）会报 401。可用**本地 Ollama** 做 embedding，仅摘要用你的 API：
    ```bash
    MEM0_EMBEDDER=ollama
    MEM0_OLLAMA_URL=http://localhost:11434
@@ -203,12 +204,20 @@ Mem0 可以与之**并存**、分工明确：
 | 位置 | 行为 |
 |------|------|
 | **assess 节点** | 若 `config.configurable.userId` 存在，用当前用户输入/学习目标做 `memory.search`，将检索到的历史记忆拼入评估 LLM 的 prompt。 |
-| **guide 节点** | 若存在 `userId` 且本轮有用户输入，在生成引导语后，将本轮 `[user, assistant]` 调用 `memory.add` 写入 Mem0。 |
-| **交互式 CLI** | `pnpm run interactive` 登录后会把当前用户的 `id` 作为 `userId` 传入图，因此会按用户做记忆检索与写入。 |
+| **guide 节点** | 若存在 `userId` 且本轮有用户输入，在生成引导语后，将本轮 `[user, assistant]` 调用 `memory.add` 写入 Mem0（不写 metadata，由 Mem0 按内容抽取记忆）。 |
+| **交互式 CLI** | 登录后若有本地进度或 Mem0 学习记录，会问「还想继续吗？」；每轮对话结束将当前 goal + level 写入本地进度（`data/user_progress.json`），再次登录时优先用该进度恢复**正确的 level**。 |
+
+### 再次登录与「欢迎回来」
+
+- **优先用本地进度**：`src/progress-store.ts` 按用户持久化「上次学习目标 + 认知层级」到 `data/user_progress.json`。再次登录时先读该进度；若有，则用其中的 goal 与 **level** 做恢复，避免错误地回到 level 1。
+- **无本地进度时**：若 Mem0 已启用，则 `searchMemories("用户学习目标 当前学习", userId)` 取第一条记忆文本作为 goal，level 固定为 1。
+- 提示语：「欢迎回来，{用户名}！上次你在学「{goal}」，当时到了 Level {level}。还想继续吗？(回车继续 / 输入 n 开新话题)」。
+- 用户选继续：`selectItemNode` 根据 `config.configurable.resumeGoal` 与 `resumeLevel`（来自进度或 1）创建恢复项；`guideNode` 首条消息使用「欢迎回来」专用 Prompt。
 
 ### 代码入口
 
 - 记忆封装：`src/memory/mem0.ts`（`searchMemories`、`addMemories`、`isMem0Enabled`）
+- 用户进度（欢迎回来 level）：`src/progress-store.ts`（`getProgress`、`saveProgress`），每轮有实质学习目标时由 interactive 写入
 - 评估侧：`src/assessment/llm.ts` 的 `llmBasedAssessment(..., options?.memoryContext)`
 - 节点：`src/nodes/assess.ts`、`src/nodes/guide.ts` 中读取 `config?.configurable?.userId` 并调用 memory 模块
 

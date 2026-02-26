@@ -8,8 +8,12 @@ import * as readline from "node:readline";
 import { graph, createInitialState } from "./graph.js";
 import { loadEnv } from "./utils/env.js";
 import { login, register } from "./auth/index.js";
+import { getProgress, saveProgress } from "./progress-store.js";
+import { searchMemories, isMem0Enabled } from "./memory/index.js";
+import { summarizeMemoryForDisplay } from "./utils/summarize-memory.js";
 
 import type { GraphState, Message, CognitiveLevel, TeachingIntent } from "./types.js";
+import { AWAITING_TOPIC_GOAL } from "./types.js";
 import type { UserPublic } from "./auth/types.js";
 
 // ============================================================================
@@ -73,6 +77,58 @@ function getLastAssistantMessage(state: GraphState): string | null {
     }
   }
   return null;
+}
+
+/** 从 Mem0 检索结果中解析出的「继续学习」信息 */
+interface ResumeInfo {
+  goal: string;
+  level: number;
+}
+
+/**
+ * 再次登录时：优先用本地进度（含正确 level），否则用 Mem0 第一条记忆（level=1）
+ *
+ * @param ask - 读行函数
+ * @param userId - 当前用户 ID
+ * @param username - 当前用户名（用于欢迎语）
+ * @returns 若用户选择继续则返回 { goal, level }，否则 null
+ */
+async function tryWelcomeBack(
+  ask: (q: string) => Promise<string>,
+  userId: string,
+  username: string
+): Promise<ResumeInfo | null> {
+  const progress = getProgress(userId);
+  let goalText: string;
+  let level: number;
+
+  if (progress) {
+    goalText = progress.goal;
+    level = progress.level;
+  } else if (isMem0Enabled()) {
+    const items = await searchMemories("用户学习目标 当前学习", userId, { limit: 5 });
+    const first = getFirstRelevantMemory(items);
+    if (!first) return null;
+    goalText = await summarizeMemoryForDisplay(first);
+    level = 1;
+  } else {
+    return null;
+  }
+
+  console.log(`\n欢迎回来，${username}！上次你在学「${goalText}」，当时到了 Level ${level}。`);
+  const raw = (await ask("还想继续吗？(回车继续 / 输入 n 开新话题): ")).trim().toLowerCase();
+  if (raw === "n" || raw === "no" || raw === "否") return null;
+  return { goal: goalText, level };
+}
+
+/**
+ * 从 Mem0 检索结果中取第一条记忆的文本
+ */
+function getFirstRelevantMemory(items: Array<{ text: string }>): string | null {
+  const first = items[0];
+  if (!first || typeof first.text !== "string") return null;
+  const trimmed = first.text.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 /**
@@ -203,8 +259,20 @@ async function main(): Promise<void> {
   console.log("💡 输入 'quit' 或 'exit' 退出");
   console.log("💡 输入 'status' 查看当前学习状态\n");
 
-  // 初始化（传入 userId 供后续 Mem0 等使用）
-  const runConfig = { configurable: { userId: currentUser.id } };
+  // 初始化（传入 userId、username 供图与欢迎语使用）
+  const runConfig: { configurable: Record<string, unknown> } = {
+    configurable: { userId: currentUser.id, username: currentUser.username },
+  };
+
+  // 再次登录：若 Mem0 有该用户的学习记录，询问是否继续
+  if (isMem0Enabled()) {
+    const resume = await tryWelcomeBack(ask, currentUser.id, currentUser.username);
+    if (resume) {
+      runConfig.configurable.resumeGoal = resume.goal;
+      runConfig.configurable.resumeLevel = resume.level;
+    }
+  }
+
   console.log("⏳ 正在初始化...\n");
   let state: GraphState = await graph.invoke(createInitialState(), runConfig);
 
@@ -257,6 +325,21 @@ async function main(): Promise<void> {
       if (lastMessage) {
         console.log("🤖:", lastMessage);
         console.log("");
+      }
+
+      // 持久化当前学习进度，供再次登录时恢复正确 level
+      const activeItem = state.activeItemId
+        ? state.learningItems[state.activeItemId]
+        : null;
+      if (
+        activeItem &&
+        activeItem.goal !== AWAITING_TOPIC_GOAL &&
+        activeItem.goal.trim().length > 0
+      ) {
+        saveProgress(currentUser.id, {
+          goal: activeItem.goal,
+          level: activeItem.currentLevel,
+        });
       }
 
       // 显示进度

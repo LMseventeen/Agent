@@ -7,8 +7,12 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-// 托管 API 返回格式
-type HostedSearchResult = Array<{ memory?: string; data?: { memory?: string } }>;
+// 托管 API 返回格式（可能带 metadata）
+type HostedSearchResult = Array<{
+  memory?: string;
+  data?: { memory?: string };
+  metadata?: Record<string, unknown>;
+}>;
 // OSS Memory 类型
 type OssMemoryInstance = {
   search(query: string, config: { userId?: string; limit?: number }): Promise<{ results: Array<{ memory?: string }> }>;
@@ -20,7 +24,14 @@ type HostedClient = {
     query: string,
     options?: { api_version?: string; user_id?: string; filters?: Record<string, unknown>; limit?: number }
   ): Promise<HostedSearchResult>;
-  add(messages: Array<{ role: string; content: string }>, options?: { user_id?: string }): Promise<unknown>;
+  add(
+    messages: Array<{ role: string; content: string }>,
+    options?: {
+      user_id?: string;
+      metadata?: Record<string, unknown>;
+      custom_instructions?: string;
+    }
+  ): Promise<unknown>;
 };
 
 type MemoryBackend = { type: "hosted"; client: HostedClient } | { type: "oss"; client: OssMemoryInstance };
@@ -32,6 +43,25 @@ type MemoryBackend = { type: "hosted"; client: HostedClient } | { type: "oss"; c
 export interface Mem0Message {
   role: "user" | "assistant";
   content: string;
+}
+
+/** 写入记忆时的可选参数：metadata 可用于过滤，custom_instructions 可指定摘要语言等 */
+export interface AddMemoryOptions {
+  metadata?: Record<string, string | number | boolean>;
+  custom_instructions?: string;
+}
+
+/** 检索记忆时的可选过滤条件 */
+export interface SearchMemoryOptions {
+  limit?: number;
+  metadata?: Record<string, unknown>;
+  categories?: string[];
+}
+
+/** 单条检索结果：记忆文本与可选 metadata */
+export interface SearchMemoryItem {
+  text: string;
+  metadata?: Record<string, unknown>;
 }
 
 // ============================================================================
@@ -183,13 +213,36 @@ async function getMemory(): Promise<MemoryBackend | null> {
 const DEFAULT_SEARCH_LIMIT = 5;
 
 /**
+ * 构建检索 filters：user_id 必选，可叠加 metadata、categories 等过滤
+ */
+function buildSearchFilters(
+  userId: string,
+  options?: SearchMemoryOptions
+): Record<string, unknown> {
+  const andClauses: Record<string, unknown>[] = [{ user_id: userId }];
+  if (options?.metadata && Object.keys(options.metadata).length > 0) {
+    andClauses.push({ metadata: options.metadata });
+  }
+  if (options?.categories && options.categories.length > 0) {
+    andClauses.push({ categories: { in: options.categories } });
+  }
+  return { AND: andClauses };
+}
+
+/**
  * 检索与当前查询相关的用户历史记忆
+ *
+ * @param options - 可选 limit、metadata、categories 等过滤
+ * @returns 每条包含 text 与可选 metadata
  */
 export async function searchMemories(
   query: string,
   userId: string,
-  limit: number = DEFAULT_SEARCH_LIMIT
-): Promise<string[]> {
+  options?: SearchMemoryOptions | number
+): Promise<SearchMemoryItem[]> {
+  const limit = typeof options === "number" ? options : options?.limit ?? DEFAULT_SEARCH_LIMIT;
+  const opts = typeof options === "number" ? undefined : options;
+
   const backend = await getMemory();
   if (!backend) {
     return [];
@@ -197,30 +250,34 @@ export async function searchMemories(
 
   try {
     if (backend.type === "hosted") {
+      const filters = buildSearchFilters(userId, opts);
       const results = await backend.client.search(query, {
         api_version: "v2",
         user_id: userId,
-        filters: { AND: [{ user_id: userId }] },
+        filters,
         limit,
       });
-      const texts: string[] = [];
+      const items: SearchMemoryItem[] = [];
       for (const m of results ?? []) {
         const text = m.memory ?? (m.data && "memory" in m.data ? (m.data as { memory?: string }).memory : null);
         if (typeof text === "string" && text.trim()) {
-          texts.push(text.trim());
+          items.push({
+            text: text.trim(),
+            metadata: m.metadata as Record<string, unknown> | undefined,
+          });
         }
       }
-      return texts;
+      return items;
     }
-    const result = await backend.client.search(query, { userId, limit });
-    const texts: string[] = [];
+    const result = await backend.client.search(query, { userId, limit: limit as number });
+    const items: SearchMemoryItem[] = [];
     for (const m of result.results ?? []) {
       const text = m.memory;
       if (typeof text === "string" && text.trim()) {
-        texts.push(text.trim());
+        items.push({ text: text.trim() });
       }
     }
-    return texts;
+    return items;
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.error("  ⚠️ [Mem0] search 失败:", message);
@@ -229,11 +286,15 @@ export async function searchMemories(
 }
 
 /**
- * 将一轮对话写入本地记忆
+ * 将一轮对话写入记忆
+ *
+ * @param options - 可选 metadata、custom_instructions（如「用中文总结」）
+ *   - 若未传 custom_instructions，会使用环境变量 MEM0_CUSTOM_INSTRUCTIONS（若有）
  */
 export async function addMemories(
   messages: Mem0Message[],
-  userId: string
+  userId: string,
+  options?: AddMemoryOptions
 ): Promise<void> {
   const backend = await getMemory();
   if (!backend) {
@@ -244,9 +305,16 @@ export async function addMemories(
     return;
   }
 
+  const customInstructions =
+    options?.custom_instructions ?? process.env.MEM0_CUSTOM_INSTRUCTIONS?.trim();
+
   try {
     if (backend.type === "hosted") {
-      await backend.client.add(messages, { user_id: userId });
+      await backend.client.add(messages, {
+        user_id: userId,
+        metadata: options?.metadata,
+        ...(customInstructions ? { custom_instructions: customInstructions } : {}),
+      });
     } else {
       await backend.client.add(messages, { userId });
     }

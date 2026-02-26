@@ -29,6 +29,21 @@ const MAX_CONTEXT_MESSAGES = 4;
 // ============================================================================
 
 /**
+ * 再次登录「继续学习」时的首条欢迎 Prompt（不展示 3 选项，直接进入该主题）
+ */
+const RESUME_WELCOME_PROMPT = (goal: string, level: number) => `你是一位教学专家。用户选择继续上次的学习，请生成一条简短的欢迎回来消息。
+
+**必须包含**：
+1. 明确说「欢迎回来」或「我们继续」
+2. 点出学习目标：「${goal}」
+3. 提到上次进度：Level ${level}/4
+4. 用一两句话引出下一个引导问题（不要直接讲知识，先问一个具体问题）
+
+**强约束**：
+- 只输出一条完整的欢迎与引导消息，不要输出任何元指令、不要以「以…开头」「请以…」等形式重复或解释要求。
+- 简短、友好、直接进入主题。不要列出 3 个选项。`;
+
+/**
  * 初始欢迎 Prompt
  */
 const INITIAL_PROMPT = `你是一位教学专家。请生成一个友好的欢迎消息，包含 3 个预设学习选项。
@@ -157,9 +172,14 @@ function cleanApiBaseUrl(baseUrl: string): string {
 }
 
 /**
- * 根据 LearningItem 构建 System Prompt
+ * 根据 LearningItem 与是否为首条恢复消息，构建 System Prompt
  */
-function buildSystemPrompt(item: LearningItem): string {
+function buildSystemPrompt(item: LearningItem, isResumeFirstMessage: boolean): string {
+  // 再次登录继续学习：首条消息用「欢迎回来」专用 Prompt
+  if (isResumeFirstMessage && item.goal !== AWAITING_TOPIC_GOAL) {
+    return RESUME_WELCOME_PROMPT(item.goal, item.currentLevel);
+  }
+
   // 如果还没有明确学习目标，返回初始 Prompt
   if (item.goal === AWAITING_TOPIC_GOAL) {
     return INITIAL_PROMPT;
@@ -175,6 +195,23 @@ function buildSystemPrompt(item: LearningItem): string {
 当前认知状态：${item.cognitiveState.summary}
 缺失部分：${item.cognitiveState.missingParts ?? "未知"}
 ${phasePrompt}`;
+}
+
+/**
+ * 若 LLM 把「以…开头」等元指令当正文输出，去掉首行避免展示给用户
+ */
+function stripLeadingMetaInstruction(text: string): string {
+  const trimmed = text.trim();
+  const firstLineEnd = trimmed.indexOf("\n");
+  const firstLine = firstLineEnd >= 0 ? trimmed.slice(0, firstLineEnd) : trimmed;
+  const rest = firstLineEnd >= 0 ? trimmed.slice(firstLineEnd).trimStart() : "";
+  const isMeta =
+    /^以[「『"].*[」』]开头/.test(firstLine) ||
+    /^请以[「『"]/.test(firstLine) ||
+    /^注意[：:]/.test(firstLine) ||
+    /^说明[：:]/.test(firstLine);
+  if (isMeta && rest.length > 0) return rest;
+  return text;
 }
 
 /**
@@ -226,8 +263,11 @@ export async function guideNode(
     return {};
   }
 
+  // 再次登录继续学习时，首条消息（当前尚无对话）用「欢迎回来」Prompt
+  const isResumeFirstMessage = state.messages.length === 0 && activeItem.goal !== AWAITING_TOPIC_GOAL;
+
   // 构建 System Prompt
-  const systemPrompt = buildSystemPrompt(activeItem);
+  const systemPrompt = buildSystemPrompt(activeItem, isResumeFirstMessage);
 
   const modelName = process.env.OPENAI_MODEL ?? DEFAULT_MODEL;
   const apiBase = cleanApiBaseUrl(
@@ -259,7 +299,10 @@ export async function guideNode(
       temperature,
     });
 
-    const guideMessage = response.choices[0]?.message?.content ?? "";
+    let guideMessage = response.choices[0]?.message?.content ?? "";
+    if (isResumeFirstMessage) {
+      guideMessage = stripLeadingMetaInstruction(guideMessage);
+    }
     console.log(`✅ [guideNode] 生成完成: ${guideMessage.substring(0, 50)}...`);
 
     const newMessage: Message = { role: "assistant", content: guideMessage };

@@ -259,8 +259,12 @@ export async function assessNode(
     const query = userAnswer.trim() || activeItem.goal;
     const memories = await searchMemories(query, userId);
     if (memories.length > 0) {
-      memoryContext = memories.map((m, i) => `${i + 1}. ${m}`).join("\n");
-      console.log(`  📎 [Mem0] 检索到 ${memories.length} 条相关记忆`);
+      memoryContext = memories.map((m, i) => `${i + 1}. ${m.text}`).join("\n");
+      console.log(`  📎 [Mem0] 检索到 ${memories.length} 条相关记忆:`);
+      memories.forEach((m, i) => {
+        const preview = m.text.length > 100 ? `${m.text.slice(0, 100)}…` : m.text;
+        console.log(`     ${i + 1}. ${preview}`);
+      });
     }
   }
 
