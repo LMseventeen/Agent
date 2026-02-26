@@ -1,14 +1,16 @@
 /**
  * Learning Agent 交互式会话
  *
- * 提供命令行交互界面，支持实时教学对话
+ * 提供命令行交互界面，支持实时教学对话；启动前需登录或注册
  */
 import * as readline from "node:readline";
 
 import { graph, createInitialState } from "./graph.js";
 import { loadEnv } from "./utils/env.js";
+import { login, register } from "./auth/index.js";
 
 import type { GraphState, Message, CognitiveLevel, TeachingIntent } from "./types.js";
+import type { UserPublic } from "./auth/types.js";
 
 // ============================================================================
 // 常量
@@ -138,6 +140,45 @@ function displayProgress(state: GraphState, round: number): void {
 // 主函数
 // ============================================================================
 
+/**
+ * 交互式登录或注册，返回当前用户信息
+ */
+async function doLoginOrRegister(
+  ask: (q: string) => Promise<string>
+): Promise<UserPublic> {
+  while (true) {
+    const action = (await ask("登录(L) / 注册(R)? ")).trim().toUpperCase();
+    if (action === "R") {
+      const username = (await ask("用户名: ")).trim();
+      const password = await ask("密码: ");
+      const passwordAgain = await ask("再次输入密码: ");
+      if (password !== passwordAgain) {
+        console.log("⚠️  两次密码不一致，请重试。\n");
+        continue;
+      }
+      const result = await register({ username, password });
+      if (result.ok) {
+        console.log(`\n✅ 注册成功，欢迎 ${result.session.user.username}\n`);
+        return result.session.user;
+      }
+      console.log(`\n❌ ${result.error}\n`);
+      continue;
+    }
+    if (action === "L") {
+      const username = (await ask("用户名: ")).trim();
+      const password = await ask("密码: ");
+      const result = await login({ username, password });
+      if (result.ok) {
+        console.log(`\n✅ 登录成功，你好 ${result.session.user.username}\n`);
+        return result.session.user;
+      }
+      console.log(`\n❌ ${result.error}\n`);
+      continue;
+    }
+    console.log("⚠️  请输入 L 或 R\n");
+  }
+}
+
 async function main(): Promise<void> {
   // 加载环境变量
   loadEnv();
@@ -154,13 +195,18 @@ async function main(): Promise<void> {
 
   console.log("╔═══════════════════════════════════════════════════╗");
   console.log("║    🎓 Learning Agent Interactive Session        ║");
-  console.log("╚═══════════════════════════════════════════════════╝");
-  console.log("\n💡 输入 'quit' 或 'exit' 退出");
+  console.log("╚═══════════════════════════════════════════════════╝\n");
+
+  // 用户登录或注册
+  const currentUser = await doLoginOrRegister(ask);
+
+  console.log("💡 输入 'quit' 或 'exit' 退出");
   console.log("💡 输入 'status' 查看当前学习状态\n");
 
-  // 初始化
+  // 初始化（传入 userId 供后续 Mem0 等使用）
+  const runConfig = { configurable: { userId: currentUser.id } };
   console.log("⏳ 正在初始化...\n");
-  let state: GraphState = await graph.invoke(createInitialState());
+  let state: GraphState = await graph.invoke(createInitialState(), runConfig);
 
   const firstMessage = getLastAssistantMessage(state);
   if (firstMessage) {
@@ -198,11 +244,14 @@ async function main(): Promise<void> {
     try {
       // 添加用户消息并调用图
       const userMessage: Message = { role: "user", content: userInput };
-      state = await graph.invoke({
-        ...state,
-        lastUserInput: userInput,
-        messages: [...state.messages, userMessage],
-      });
+      state = await graph.invoke(
+        {
+          ...state,
+          lastUserInput: userInput,
+          messages: [...state.messages, userMessage],
+        },
+        runConfig
+      );
 
       const lastMessage = getLastAssistantMessage(state);
       if (lastMessage) {

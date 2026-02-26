@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "基于 LangGraph 的自适应教学 Agent",
   "type": "module",
+  "packageManager": "pnpm@9.15.0",
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
@@ -10,9 +11,11 @@
     "interactive": "tsx src/interactive.ts",
     "mcp:demo": "tsx src/mcp-demo.ts",
     "mcp:server": "tsx src/mcp/quiz-server.ts",
+    "server": "tsx src/server.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "jose": "^5.9.6",
     "@langchain/core": "^1.1.8",
     "@langchain/langgraph": "^1.0.7",
     "@langchain/mcp-adapters": "^1.1.1",

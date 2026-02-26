@@ -7,6 +7,9 @@ node_modules/
 # 构建产物
 dist/
 
+# 本地数据（用户存储等）
+data/
+
 # IDE
 .idea/
 *.swp
